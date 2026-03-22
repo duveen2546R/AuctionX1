@@ -33,6 +33,23 @@ const rooms = new Map();
 let playersMaster = [];
 let teamsMaster = [];
 
+async function ensureRoomDbId(roomId, room) {
+  if (room.dbId) return room.dbId;
+  try {
+    const [[row]] = await pool.query("SELECT id FROM rooms WHERE room_code = ? LIMIT 1", [roomId]);
+    if (row) {
+      room.dbId = row.id;
+      return row.id;
+    }
+    const [insert] = await pool.query("INSERT INTO rooms (room_code) VALUES (?)", [roomId]);
+    room.dbId = insert.insertId;
+    return room.dbId;
+  } catch (err) {
+    console.error("Failed to ensure room db id", err.message);
+    return null;
+  }
+}
+
 function shuffle(array) {
   return array
     .map((item) => ({ ...item, sort: Math.random() }))
@@ -189,9 +206,9 @@ function evaluatePlaying11(room, socketId, playerIds) {
   });
 
   if (bats < 3) return { ok: false, reason: "Need at least 3 batsmen" };
-  if (bowls < 3) return { ok: false, reason: "Need at least 3 bowlers" };
+  if (bowls < 2) return { ok: false, reason: "Need at least 2 bowlers" };
   if (wks < 1) return { ok: false, reason: "Need at least 1 wicketkeeper" };
-  if (ars < 1 || ars > 3) return { ok: false, reason: "Need 1–3 all-rounders" };
+  if (ars > 4) return { ok: false, reason: "Max 4 all-rounders" };
   if (overseas > 4) return { ok: false, reason: "Max 4 overseas players" };
 
   const balanceBonus = 100;
@@ -254,15 +271,16 @@ async function finalizeBid(roomId) {
     user.score = user.team.reduce((sum, p) => sum + Number(p.rating || 0), 0);
     user.budget = Math.max(0, (user.budget ?? 100) - Number(room.currentBid || 0));
 
-    if (room.dbId && user.userId) {
+    const dbId = room.dbId || (await ensureRoomDbId(roomId, room));
+    if (dbId && user.userId) {
       try {
         await pool.query(
           "INSERT INTO team_players (room_id, user_id, player_id, price) VALUES (?, ?, ?, ?)",
-          [room.dbId, user.userId, room.currentPlayer.id, room.currentBid]
+          [dbId, user.userId, room.currentPlayer.id, room.currentBid]
         );
         await pool.query(
           "UPDATE room_players SET budget = ? WHERE room_id = ? AND user_id = ?",
-          [user.budget, room.dbId, user.userId]
+          [user.budget, dbId, user.userId]
         );
       } catch (err) {
         console.error("Failed to persist team winner", err.message);
@@ -367,26 +385,25 @@ function buildAutoLineup(team) {
   for (const p of byScore(wks)) { if (pushWithCap(p)) break; }
   if (!lineup.some((p) => (p.role || "").toLowerCase().includes("keep"))) return null;
 
-  // 1-3 AR
+  // Up to 4 AR
   for (const p of byScore(ars)) {
-    if (lineup.filter((x) => (x.role || "").toLowerCase().includes("all")).length >= 3) break;
+    if (lineup.filter((x) => (x.role || "").toLowerCase().includes("all")).length >= 4) break;
     pushWithCap(p);
   }
-  if (lineup.filter((x) => (x.role || "").toLowerCase().includes("all")).length < 1) return null;
 
-  // Fill bats to 4
+  // Fill bats to 3
   for (const p of byScore(bats)) {
     if (lineup.length >= 11) break;
     const batCount = lineup.filter((x) => (x.role || "").toLowerCase().includes("bat") || (x.role || "").toLowerCase().includes("all")).length;
-    if (batCount >= 4) break;
+    if (batCount >= 3) break;
     pushWithCap(p);
   }
 
-  // Fill bowls to 3
+  // Fill bowls to 2
   for (const p of byScore(bowls)) {
     if (lineup.length >= 11) break;
     const bowlCount = lineup.filter((x) => (x.role || "").toLowerCase().includes("bowl") || (x.role || "").toLowerCase().includes("all")).length;
-    if (bowlCount >= 3) break;
+    if (bowlCount >= 2) break;
     pushWithCap(p);
   }
 
@@ -452,7 +469,7 @@ function handleBid(socket, amount) {
   if (room.passedUsers.has(socket.id)) return;
   if (room.highestBidder === socket.id) return; // prevent consecutive self-bids
 
-  const numericBid = Number(amount);
+  const numericBid = Math.round(Number(amount) * 100) / 100; // clamp to 2 decimals
   const step =
     room.currentBid < 12 ? 0.1 :
     room.currentBid < 20 ? 0.25 :
@@ -491,7 +508,7 @@ function handleBid(socket, amount) {
     pool
       .query(
         "INSERT INTO bids (room_id, player_id, user_id, bid_amount) VALUES (?, ?, ?, ?)",
-        [room.dbId, room.currentPlayer.id, user.userId, numericBid]
+        [room.dbId, room.currentPlayer.id, user.userId, room.currentBid]
       )
       .catch((err) => console.error("Failed to persist bid", err.message));
   }
@@ -509,6 +526,7 @@ io.on("connection", (socket) => {
     let roomDbId = null;
     let budget = 100;
     let teamId = null;
+    let existingTeam = [];
     try {
       const [users] = await pool.query("SELECT id FROM users WHERE username = ? LIMIT 1", [cleanName]);
       if (users.length) {
@@ -542,6 +560,17 @@ io.on("connection", (socket) => {
       if (playerRow.length) {
         budget = Number(playerRow[0].budget ?? 100);
       }
+
+      // load existing team for rejoin
+      const [teamRows] = await pool.query(
+        `SELECT c.id, c.name, c.role, c.batting_rating, c.bowling_rating, c.rating, c.base_price, c.country, tp.price
+         FROM team_players tp
+         JOIN cricketers c ON c.id = tp.player_id
+         WHERE tp.room_id = ? AND tp.user_id = ?
+         ORDER BY c.role, c.name`,
+        [roomDbId, userId]
+      );
+      existingTeam = teamRows;
     } catch (err) {
       console.error("DB error on join_room", err.message);
     }
@@ -554,11 +583,20 @@ io.on("connection", (socket) => {
         return;
       }
     }
-    room.users.set(socket.id, { username: cleanName, team: [], score: 0, budget, userId, teamName: cleanTeam });
+    const initialTeam = existingTeam;
+    const initialScore = initialTeam.reduce((sum, p) => sum + Number(p.rating || 0), 0);
+    room.users.set(socket.id, { username: cleanName, team: initialTeam, score: initialScore, budget, userId, teamName: cleanTeam });
     socket.join(roomId);
     broadcastPlayers(roomId);
     socket.emit("bid_update", { amount: room.currentBid, by: null, history: room.bidHistory || [] });
     socket.emit("budget_update", { budget });
+    socket.emit("join_ack", {
+      userId,
+      budget,
+      team: initialTeam,
+      username: cleanName,
+      teamName: cleanTeam,
+    });
   });
 
   socket.on("start_auction", (roomId) => {
@@ -657,15 +695,18 @@ io.on("connection", (socket) => {
     }
     room.playing11.set(socket.id, { ...evalResult, playerIds: ids, username: socket.data.username });
 
-    if (room.dbId && room.users.get(socket.id)?.userId) {
-      const uid = room.users.get(socket.id).userId;
+    const maybeSave = async () => {
+      const dbId = room.dbId || (await ensureRoomDbId(roomId, room));
+      const uid = room.users.get(socket.id)?.userId;
+      if (!dbId || !uid) return;
       pool
         .query(
           "INSERT INTO playing11 (room_id, user_id, player_ids, score) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE player_ids = VALUES(player_ids), score = VALUES(score)",
-          [room.dbId, uid, JSON.stringify(ids), evalResult.score]
+          [dbId, uid, JSON.stringify(ids), evalResult.score]
         )
         .catch((err) => console.error("Failed to persist playing11", err.message));
-    }
+    };
+    maybeSave();
 
     const active = activeSockets(room);
     const submissions = room.playing11.size;
