@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { API_BASE } from "../config";
 
 export default function Home() {
     const [username, setUsername] = useState(localStorage.getItem("username") || "");
@@ -10,11 +11,11 @@ export default function Home() {
     const navigate = useNavigate();
 
     useEffect(() => {
-        fetch(`${import.meta.env.VITE_API_URL || "http://localhost:5000"}/teams`)
+        fetch(`${API_BASE}/teams`)
             .then((res) => res.json())
             .then(setTeams)
             .catch(() => setTeams([]));
-        fetch(`${import.meta.env.VITE_API_URL || "http://localhost:5000"}/players`)
+        fetch(`${API_BASE}/players`)
             .then((r) => r.json())
             .then(setPlayers)
             .catch(() => setPlayers([]));

@@ -6,6 +6,7 @@ import BidPanel from "../components/BidPanel";
 import TeamList from "../components/TeamList";
 import PlayerStatusList from "../components/PlayerStatusList";
 import TeamPurses from "../components/TeamPurses";
+import { API_BASE } from "../config";
 
 export default function Auction() {
     const { state } = useLocation();
@@ -47,7 +48,6 @@ export default function Auction() {
     const [playerStatus, setPlayerStatus] = useState({ sold: [], remaining: [], updatedAt: null });
     const [purses, setPurses] = useState([]);
 
-    const apiBase = useMemo(() => import.meta.env.VITE_API_URL || "http://localhost:5000", []);
     useEffect(() => {
         if (username) localStorage.setItem("username", username);
         if (teamName) localStorage.setItem("teamName", teamName);
@@ -60,7 +60,7 @@ export default function Auction() {
             const qs = new URLSearchParams();
             if (userId) qs.set("userId", userId);
             else qs.set("user", username);
-            const res = await fetch(`${apiBase}/rooms/${roomId}/players-status?${qs.toString()}`);
+            const res = await fetch(`${API_BASE}/rooms/${roomId}/players-status?${qs.toString()}`);
             if (!res.ok) throw new Error(`status ${res.status}`);
             const data = await res.json();
             setPlayerStatus({
@@ -80,19 +80,19 @@ export default function Auction() {
         } catch (err) {
             console.warn("Failed to load player status", err.message);
         }
-    }, [apiBase, roomId, username, userId]);
+    }, [roomId, username, userId]);
 
     const refreshPurses = useCallback(async () => {
         if (!roomId) return;
         try {
-            const res = await fetch(`${apiBase}/rooms/${roomId}/purses`);
+        const res = await fetch(`${API_BASE}/rooms/${roomId}/purses`);
             if (!res.ok) throw new Error(`status ${res.status}`);
             const data = await res.json();
             setPurses(data.purses || []);
         } catch (err) {
             console.warn("Failed to load purses", err.message);
         }
-    }, [apiBase, roomId]);
+    }, [roomId]);
 
     useEffect(() => {
         if (roomId) {
