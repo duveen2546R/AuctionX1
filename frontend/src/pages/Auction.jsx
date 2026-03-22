@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import socket from "../socket";
 import PlayerCard from "../components/PlayerCard";
 import BidPanel from "../components/BidPanel";
 import TeamList from "../components/TeamList";
+import PlayerStatusList from "../components/PlayerStatusList";
 
 export default function Auction() {
     const { state } = useLocation();
@@ -39,6 +40,26 @@ export default function Auction() {
     const [budget, setBudget] = useState(100);
     const [chat, setChat] = useState([]);
     const [chatInput, setChatInput] = useState("");
+    const [queueInfo, setQueueInfo] = useState({ remaining: null, completed: null, next: [] });
+    const [playerStatus, setPlayerStatus] = useState({ sold: [], remaining: [], updatedAt: null });
+
+    const apiBase = useMemo(() => import.meta.env.VITE_API_URL || "http://localhost:5000", []);
+
+    const refreshPlayerStatus = useCallback(async () => {
+        if (!roomId) return;
+        try {
+            const res = await fetch(`${apiBase}/rooms/${roomId}/players-status`);
+            if (!res.ok) throw new Error(`status ${res.status}`);
+            const data = await res.json();
+            setPlayerStatus({
+                sold: data.sold || [],
+                remaining: data.remaining || [],
+                updatedAt: Date.now(),
+            });
+        } catch (err) {
+            console.warn("Failed to load player status", err.message);
+        }
+    }, [apiBase, roomId]);
 
     useEffect(() => {
         if (roomId) {
@@ -71,6 +92,7 @@ export default function Auction() {
             setLastMyBid(null);
             if (eliminated) setEliminated(true);
             setBidHistory([]);
+            refreshPlayerStatus();
         });
 
         socket.on("auction_complete", (payload) => {
@@ -97,8 +119,14 @@ export default function Auction() {
             if (typeof b?.budget === "number") setBudget(Number(b.budget));
         });
 
+        socket.on("queue_update", (q) => {
+            if (q) setQueueInfo(q);
+        });
+
+        refreshPlayerStatus();
+
         return () => socket.off();
-    }, [navigate, roomId, username, teamName, team]);
+    }, [navigate, roomId, username, teamName, team, refreshPlayerStatus]);
 
     const placeBid = (amount) => {
         if (eliminated) return;
@@ -124,7 +152,9 @@ export default function Auction() {
         setChatInput("");
     };
 
-    const gridCols = sidebarOpen ? "lg:grid-cols-[320px_1fr]" : "lg:grid-cols-1";
+    const gridCols = sidebarOpen ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1";
+    const completedDisplay = queueInfo.completed ?? playerStatus.sold.length ?? "—";
+    const remainingDisplay = queueInfo.remaining ?? playerStatus.remaining.length ?? "—";
 
     return (
         <div
@@ -148,6 +178,9 @@ export default function Auction() {
                         </button>
                     </div>
                     <TeamList team={team} />
+                    <div className="mt-4 border-t border-border pt-3">
+                        <PlayerStatusList sold={playerStatus.sold} remaining={playerStatus.remaining} currentId={currentPlayer?.id} />
+                    </div>
                 </aside>
 
                 <main className="glass-card border border-border p-5 space-y-4">
@@ -163,9 +196,14 @@ export default function Auction() {
                         <div className="text-sm text-slate-400">Room: {roomId}</div>
                     </div>
 
-                    <div className="flex gap-4 text-sm text-slate-300">
-                        <span>Completed: {Math.max(0, (currentPlayer ? roomIdxStub - 1 : roomIdxStub))}</span>
-                        <span>Remaining: —</span>
+                    <div className="flex flex-wrap gap-3 text-sm text-slate-300">
+                        <span>Completed: {completedDisplay}</span>
+                        <span>Remaining: {remainingDisplay}</span>
+                        {queueInfo.next && queueInfo.next.length > 0 && (
+                            <span className="text-slate-400">
+                                Next: {queueInfo.next.map((p) => p.name).join(", ")}
+                            </span>
+                        )}
                     </div>
 
                     {currentPlayer && <PlayerCard player={currentPlayer} />}
