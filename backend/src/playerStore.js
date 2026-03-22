@@ -4,7 +4,7 @@ import { fallbackPlayers } from "./data/players.js";
 export async function loadPlayers() {
   try {
     const [rows] = await pool.query(
-      "SELECT id, name, role, rating, base_price FROM players ORDER BY rating DESC"
+      "SELECT id, name, role, rating, batting_rating, bowling_rating, base_price, country FROM cricketers ORDER BY rating DESC"
     );
     if (rows.length) return rows;
   } catch (err) {
