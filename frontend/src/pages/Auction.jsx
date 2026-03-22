@@ -74,7 +74,13 @@ export default function Auction() {
         });
 
         socket.on("auction_complete", (payload) => {
-            navigate("/result", { state: { team, disqualified: (payload?.disqualified || []).includes(username) } });
+            navigate("/result", {
+                state: {
+                    team,
+                    disqualified: (payload?.disqualified || []).includes(username),
+                    deadline: payload?.deadline || null,
+                },
+            });
         });
 
         socket.on("bid_warning", (payload) => {
@@ -157,6 +163,11 @@ export default function Auction() {
                         <div className="text-sm text-slate-400">Room: {roomId}</div>
                     </div>
 
+                    <div className="flex gap-4 text-sm text-slate-300">
+                        <span>Completed: {Math.max(0, (currentPlayer ? roomIdxStub - 1 : roomIdxStub))}</span>
+                        <span>Remaining: —</span>
+                    </div>
+
                     {currentPlayer && <PlayerCard player={currentPlayer} />}
 
                     <div className="flex items-center gap-3 text-lg">
@@ -172,7 +183,8 @@ export default function Auction() {
                         onBid={placeBid}
                         onWithdraw={withdraw}
                         onPass={passPlayer}
-                        disabled={hasPassed || eliminated}
+                        isPassed={hasPassed}
+                        isEliminated={eliminated}
                     />
 
                     <div className="flex justify-between text-sm text-slate-400 border-t border-border pt-3">

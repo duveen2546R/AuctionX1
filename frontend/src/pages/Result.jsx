@@ -32,11 +32,11 @@ function validateLineup(team, ids) {
     });
 
     const errors = [];
-    if (ids.length < 8) errors.push("Pick exactly 11 players");
-    if (roleCounts.bat < 3) errors.push("Need 3 batsmen");
-    if (roleCounts.bowl < 2) errors.push("Need 2 bowlers");
-    if (roleCounts.wk < 0) errors.push("Need 1 wicketkeeper");
-    if (roleCounts.ar < 1 || roleCounts.ar > 4) errors.push("All-rounders must be 1–4");
+    if (ids.length !== 11) errors.push("Pick exactly 11 players");
+    if (roleCounts.bat < 4) errors.push("Need at least 4 batsmen");
+    if (roleCounts.bowl < 3) errors.push("Need at least 3 bowlers");
+    if (roleCounts.wk < 1) errors.push("Need at least 1 wicketkeeper");
+    if (roleCounts.ar < 1 || roleCounts.ar > 3) errors.push("All-rounders must be 1–3");
     if (roleCounts.overseas > 4) errors.push("Max 4 overseas");
 
     return { ok: errors.length === 0, errors, roleCounts, battingTotal, bowlingTotal };
@@ -46,11 +46,13 @@ export default function Result() {
     const { state } = useLocation();
     const team = state?.team || [];
     const isDisqualified = state?.disqualified;
-    const [selected, setSelected] = useState(team.slice(0, 11).map((p) => p.id));
+    const deadline = state?.deadline || null;
+    const [selected, setSelected] = useState([]);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState(null);
     const [results, setResults] = useState(null);
     const [winner, setWinner] = useState(null);
+    const [remaining, setRemaining] = useState(null);
 
     useEffect(() => {
         const onResults = (payload) => {
@@ -73,8 +75,21 @@ export default function Result() {
     }, []);
 
     useEffect(() => {
-        setSelected(team.slice(0, 11).map((p) => p.id));
-    }, [team]);
+        if (team.length >= 11 && selected.length === 0) {
+            setSelected(team.slice(0, 11).map((p) => p.id));
+        }
+    }, [team, selected.length]);
+
+    useEffect(() => {
+        if (!deadline) return;
+        const tick = () => {
+            const ms = deadline - Date.now();
+            setRemaining(ms > 0 ? Math.ceil(ms / 1000) : 0);
+        };
+        tick();
+        const interval = setInterval(tick, 1000);
+        return () => clearInterval(interval);
+    }, [deadline]);
 
     const validation = useMemo(() => validateLineup(team, selected), [team, selected]);
 
@@ -104,7 +119,10 @@ export default function Result() {
                 <div className="glass-card border border-border p-5 space-y-4">
                     <div>
                         <h1 className="text-3xl font-semibold">Choose Your Best XI</h1>
-                        <p className="text-slate-400 text-sm">Rules: 11 players, ≥4 batsmen, ≥3 bowlers, ≥1 wicketkeeper, 1–3 all-rounders, max 4 overseas.</p>
+                        <p className="text-slate-400 text-sm">
+                            Rules: 11 players, ≥4 batsmen, ≥3 bowlers, ≥1 wicketkeeper, 1–3 all-rounders, max 4 overseas.
+                            {remaining !== null && ` · Auto-submit in ${remaining}s`}
+                        </p>
                         {isDisqualified && <p className="text-amber-400 text-sm mt-2">You are disqualified (insufficient squad to meet rules).</p>}
                     </div>
 

@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import pool from "./db.js";
 import { loadPlayers } from "./playerStore.js";
 import { loadTeams } from "./teamStore.js";
+import apiRouter from "./routes.js";
 
 dotenv.config();
 
@@ -13,9 +14,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true });
-});
+app.use(apiRouter);
 
 app.get("/teams", async (_req, res) => {
   const teams = await loadTeams();
@@ -119,6 +118,10 @@ function maybeAutoResolve(roomId) {
   const room = rooms.get(roomId);
   if (!room || !room.currentPlayer) return;
   const active = activeSockets(room);
+  if (active.length === 0) {
+    endAuction(roomId);
+    return;
+  }
   if (active.length === 1) {
     if (!room.highestBidder) {
       room.highestBidder = active[0];
@@ -135,6 +138,15 @@ function maybeAutoResolve(roomId) {
   } else if (active.length === 0) {
     finalizeBid(roomId);
   }
+}
+
+function emitQueueUpdate(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const remaining = room.playersQueue.length - room.idx;
+  const completed = room.idx - 1;
+  const next = room.playersQueue.slice(room.idx, room.idx + 3);
+  io.to(roomId).emit("queue_update", { remaining, completed, next });
 }
 
 function evaluatePlaying11(room, socketId, playerIds) {
@@ -176,7 +188,7 @@ function evaluatePlaying11(room, socketId, playerIds) {
     }
   });
 
-  if (bats < 4) return { ok: false, reason: "Need at least 4 batsmen" };
+  if (bats < 3) return { ok: false, reason: "Need at least 3 batsmen" };
   if (bowls < 3) return { ok: false, reason: "Need at least 3 bowlers" };
   if (wks < 1) return { ok: false, reason: "Need at least 1 wicketkeeper" };
   if (ars < 1 || ars > 3) return { ok: false, reason: "Need 1–3 all-rounders" };
@@ -195,10 +207,6 @@ function evaluatePlaying11(room, socketId, playerIds) {
 function startNextPlayer(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
-  if (activeSockets(room).length === 0) {
-    endAuction(roomId);
-    return;
-  }
   if (room.timer) {
     clearInterval(room.timer);
     room.timer = null;
@@ -230,6 +238,7 @@ function startNextPlayer(roomId) {
 
   io.to(roomId).emit("new_player", player);
   io.to(roomId).emit("bid_update", { amount: room.currentBid, by: null, history: room.bidHistory || [] });
+  emitQueueUpdate(roomId);
   startTimer(roomId);
   maybeAutoResolve(roomId);
 }
@@ -277,7 +286,7 @@ async function finalizeBid(roomId) {
 
 function endAuction(roomId) {
   const room = rooms.get(roomId);
-  if (!room) return;
+  if (!room || room.status === "picking") return;
   room.status = "picking";
   if (room.timer) {
     clearInterval(room.timer);
@@ -333,6 +342,106 @@ function endAuction(roomId) {
     disqualified: dqNames,
     deadline: room.selectDeadline,
   });
+}
+
+function buildAutoLineup(team) {
+  const lineup = [];
+  const bats = team.filter((p) => (p.role || "").toLowerCase().includes("bat") && !(p.role || "").toLowerCase().includes("all"));
+  const bowls = team.filter((p) => (p.role || "").toLowerCase().includes("bowl") && !(p.role || "").toLowerCase().includes("all"));
+  const wks = team.filter((p) => (p.role || "").toLowerCase().includes("keep"));
+  const ars = team.filter((p) => (p.role || "").toLowerCase().includes("all"));
+
+  const byScore = (arr) =>
+    arr.slice().sort((a, b) => (Number(b.batting_rating ?? b.rating ?? 0) + Number(b.bowling_rating ?? b.rating ?? 0)) -
+      (Number(a.batting_rating ?? a.rating ?? 0) + Number(a.bowling_rating ?? a.rating ?? 0)));
+
+  const overseas = (p) => (p.country || "").toLowerCase() !== "india";
+  const pushWithCap = (p) => {
+    const osCount = lineup.filter(overseas).length;
+    if (overseas(p) && osCount >= 4) return false;
+    lineup.push(p);
+    return true;
+  };
+
+  // 1 wk
+  for (const p of byScore(wks)) { if (pushWithCap(p)) break; }
+  if (!lineup.some((p) => (p.role || "").toLowerCase().includes("keep"))) return null;
+
+  // 1-3 AR
+  for (const p of byScore(ars)) {
+    if (lineup.filter((x) => (x.role || "").toLowerCase().includes("all")).length >= 3) break;
+    pushWithCap(p);
+  }
+  if (lineup.filter((x) => (x.role || "").toLowerCase().includes("all")).length < 1) return null;
+
+  // Fill bats to 4
+  for (const p of byScore(bats)) {
+    if (lineup.length >= 11) break;
+    const batCount = lineup.filter((x) => (x.role || "").toLowerCase().includes("bat") || (x.role || "").toLowerCase().includes("all")).length;
+    if (batCount >= 4) break;
+    pushWithCap(p);
+  }
+
+  // Fill bowls to 3
+  for (const p of byScore(bowls)) {
+    if (lineup.length >= 11) break;
+    const bowlCount = lineup.filter((x) => (x.role || "").toLowerCase().includes("bowl") || (x.role || "").toLowerCase().includes("all")).length;
+    if (bowlCount >= 3) break;
+    pushWithCap(p);
+  }
+
+  // Fill remaining best overall
+  const remaining = byScore(team.filter((p) => !lineup.includes(p)));
+  for (const p of remaining) {
+    if (lineup.length >= 11) break;
+    pushWithCap(p);
+  }
+
+  if (lineup.length !== 11) return null;
+  const val = evaluatePlaying11({ users: new Map([["tmp", { team: lineup }]]) }, "tmp", lineup.map((p) => p.id));
+  if (!val.ok) return null;
+  return lineup;
+}
+
+async function autoFinalizePlaying11(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || room.status !== "picking") return;
+  const active = activeSockets(room);
+  const disqualified = room.disqualified || new Set();
+
+  for (const sid of active) {
+    if (disqualified.has(sid)) continue;
+    if (room.playing11.has(sid)) continue;
+    const user = room.users.get(sid);
+    const lineup = buildAutoLineup(user.team || []);
+    if (lineup) {
+      const evalResult = evaluatePlaying11(room, sid, lineup.map((p) => p.id));
+      if (evalResult.ok) {
+        room.playing11.set(sid, { ...evalResult, playerIds: lineup.map((p) => p.id), username: user.username });
+        if (room.dbId && user.userId) {
+          pool
+            .query(
+              "INSERT INTO playing11 (room_id, user_id, player_ids, score) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE player_ids = VALUES(player_ids), score = VALUES(score)",
+              [room.dbId, user.userId, JSON.stringify(lineup.map((p) => p.id)), evalResult.score]
+            )
+            .catch((err) => console.error("Failed to persist playing11", err.message));
+        }
+      } else {
+        disqualified.add(sid);
+      }
+    } else {
+      disqualified.add(sid);
+    }
+  }
+
+  room.disqualified = disqualified;
+  if (room.playing11.size + disqualified.size >= active.length) {
+    const results = Array.from(room.playing11.values()).sort((a, b) => b.score - a.score);
+    const winnerName = results[0]?.username || "No winner";
+    const dqNames = Array.from(disqualified).map((sid) => room.users.get(sid)?.username).filter(Boolean);
+    io.to(roomId).emit("playing11_results", { winner: winnerName, results, disqualified: dqNames });
+    room.status = "finished_finalized";
+  }
 }
 
 function handleBid(socket, amount) {
@@ -465,16 +574,20 @@ io.on("connection", (socket) => {
   socket.on("withdraw_bid", async () => {
     const roomId = socket.data.roomId;
     const room = rooms.get(roomId);
-    if (!room || !room.currentPlayer) return;
-    if (room.highestBidder !== socket.id) return;
+    if (!room) return;
+    
     room.blockedUsers.add(socket.id);
-  room.bidHistory.push({
-    amount: room.currentBid,
-    by: socket.data.username,
-    ts: Date.now(),
-    note: "withdraw (forced sale)",
-  });
-  await finalizeBid(roomId); // immediate sale to withdrawing highest bidder
+
+    if (room.currentPlayer && room.highestBidder === socket.id) {
+      room.bidHistory.push({
+        amount: room.currentBid,
+        by: socket.data.username,
+        ts: Date.now(),
+        note: "withdraw (forced sale)",
+      });
+      await finalizeBid(roomId); // immediate sale to withdrawing highest bidder
+    }
+
     if (activeSockets(room).length === 0) {
       endAuction(roomId);
     }
