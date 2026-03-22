@@ -33,10 +33,10 @@ function validateLineup(team, ids) {
 
     const errors = [];
     if (ids.length !== 11) errors.push("Pick exactly 11 players");
-    if (roleCounts.bat < 4) errors.push("Need at least 4 batsmen");
-    if (roleCounts.bowl < 3) errors.push("Need at least 3 bowlers");
+    if (roleCounts.bat < 3) errors.push("Need at least 3 batsmen");
+    if (roleCounts.bowl < 2) errors.push("Need at least 2 bowlers");
     if (roleCounts.wk < 1) errors.push("Need at least 1 wicketkeeper");
-    if (roleCounts.ar < 1 || roleCounts.ar > 3) errors.push("All-rounders must be 1–3");
+    if (roleCounts.ar > 4) errors.push("Max 4 all-rounders");
     if (roleCounts.overseas > 4) errors.push("Max 4 overseas");
 
     return { ok: errors.length === 0, errors, roleCounts, battingTotal, bowlingTotal };
@@ -120,7 +120,7 @@ export default function Result() {
                     <div>
                         <h1 className="text-3xl font-semibold">Choose Your Best XI</h1>
                         <p className="text-slate-400 text-sm">
-                            Rules: 11 players, ≥4 batsmen, ≥3 bowlers, ≥1 wicketkeeper, 1–3 all-rounders, max 4 overseas.
+                            Rules: 11 players, ≥3 batsmen, ≥2 bowlers, ≥1 wicketkeeper, max 4 all-rounders, max 4 overseas.
                             {remaining !== null && ` · Auto-submit in ${remaining}s`}
                         </p>
                         {isDisqualified && <p className="text-amber-400 text-sm mt-2">You are disqualified (insufficient squad to meet rules).</p>}

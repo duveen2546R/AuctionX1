@@ -151,8 +151,8 @@ export default function Home() {
                         <h3 className="text-xl font-semibold mb-2">Auction Rules</h3>
                         <ul className="text-slate-300 text-sm list-disc list-inside space-y-1">
                             <li>Bid step: ₹0.10 Cr &lt; 12 Cr, ₹0.25 Cr &lt; 20 Cr, else ₹0.50 Cr.</li>
-                            <li>Pass skips current player (per-player), Withdraw sells to you and blocks further bids.</li>
-                            <li>Max 4 overseas in Playing XI; XI must follow role balance.</li>
+                            <li>Pass skips current player (per-player); Withdraw sells to you and blocks further bids.</li>
+                            <li>Playing XI rules: ≥3 batsmen, ≥2 bowlers, ≥1 wicketkeeper, max 4 all-rounders, max 4 overseas.</li>
                             <li>2 minutes to submit XI; auto-submit or disqualify otherwise.</li>
                         </ul>
                     </div>

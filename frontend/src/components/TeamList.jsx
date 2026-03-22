@@ -1,5 +1,6 @@
-export default function TeamList({ team }) {
+export default function TeamList({ team, budget = 100 }) {
     const totalRating = team.reduce((sum, player) => sum + Number(player.rating || 0), 0);
+    const spent = Math.max(0, 100 - Number(budget || 0));
     const groups = {
         batsman: [],
         bowler: [],
@@ -37,6 +38,7 @@ export default function TeamList({ team }) {
     return (
         <div className="flex flex-col gap-1">
             <h3 className="text-lg font-semibold">Your Team · Rating {totalRating}</h3>
+            <p className="text-sm text-slate-300">Purse: ₹{Number(budget || 0).toFixed(2)} Cr · Spent: ₹{spent.toFixed(2)} Cr</p>
             {team.length === 0 && <p className="text-slate-400 text-sm">No players yet</p>}
             {renderGroup("Batsmen", groups.batsman)}
             {renderGroup("All-rounders", groups.allrounder)}

@@ -5,6 +5,7 @@ import PlayerCard from "../components/PlayerCard";
 import BidPanel from "../components/BidPanel";
 import TeamList from "../components/TeamList";
 import PlayerStatusList from "../components/PlayerStatusList";
+import TeamPurses from "../components/TeamPurses";
 
 export default function Auction() {
     const { state } = useLocation();
@@ -12,6 +13,8 @@ export default function Auction() {
     const navigate = useNavigate();
     const username = state?.username || localStorage.getItem("username") || "You";
     const teamName = state?.teamName || localStorage.getItem("teamName") || "";
+    const storedUserId = localStorage.getItem("userId");
+    const [userId, setUserId] = useState(storedUserId ? Number(storedUserId) : null);
     const slugMap = {
         "royal challengers bangalore": "banglore",
         "chennai super kings": "chennai",
@@ -42,13 +45,22 @@ export default function Auction() {
     const [chatInput, setChatInput] = useState("");
     const [queueInfo, setQueueInfo] = useState({ remaining: null, completed: null, next: [] });
     const [playerStatus, setPlayerStatus] = useState({ sold: [], remaining: [], updatedAt: null });
+    const [purses, setPurses] = useState([]);
 
     const apiBase = useMemo(() => import.meta.env.VITE_API_URL || "http://localhost:5000", []);
+    useEffect(() => {
+        if (username) localStorage.setItem("username", username);
+        if (teamName) localStorage.setItem("teamName", teamName);
+        if (userId) localStorage.setItem("userId", String(userId));
+    }, [username, teamName, userId]);
 
     const refreshPlayerStatus = useCallback(async () => {
         if (!roomId) return;
         try {
-            const res = await fetch(`${apiBase}/rooms/${roomId}/players-status`);
+            const qs = new URLSearchParams();
+            if (userId) qs.set("userId", userId);
+            else qs.set("user", username);
+            const res = await fetch(`${apiBase}/rooms/${roomId}/players-status?${qs.toString()}`);
             if (!res.ok) throw new Error(`status ${res.status}`);
             const data = await res.json();
             setPlayerStatus({
@@ -56,8 +68,29 @@ export default function Auction() {
                 remaining: data.remaining || [],
                 updatedAt: Date.now(),
             });
+            if (data.counts) {
+                setQueueInfo((prev) => ({
+                    ...prev,
+                    completed: data.counts.sold ?? prev.completed,
+                    remaining: data.counts.remaining ?? prev.remaining,
+                }));
+            }
+            if (Array.isArray(data.userTeam)) setTeam(data.userTeam);
+            if (typeof data.userBudget === "number") setBudget(Number(data.userBudget));
         } catch (err) {
             console.warn("Failed to load player status", err.message);
+        }
+    }, [apiBase, roomId, username, userId]);
+
+    const refreshPurses = useCallback(async () => {
+        if (!roomId) return;
+        try {
+            const res = await fetch(`${apiBase}/rooms/${roomId}/purses`);
+            if (!res.ok) throw new Error(`status ${res.status}`);
+            const data = await res.json();
+            setPurses(data.purses || []);
+        } catch (err) {
+            console.warn("Failed to load purses", err.message);
         }
     }, [apiBase, roomId]);
 
@@ -76,7 +109,8 @@ export default function Auction() {
         });
 
         socket.on("bid_update", (payload) => {
-            setCurrentBid(payload.amount);
+            const rounded = Math.round(Number(payload.amount) * 100) / 100;
+            setCurrentBid(rounded);
             setLastBidder(payload.by);
             setWarning(null);
             if (payload.history) setBidHistory(payload.history);
@@ -93,6 +127,7 @@ export default function Auction() {
             if (eliminated) setEliminated(true);
             setBidHistory([]);
             refreshPlayerStatus();
+            refreshPurses();
         });
 
         socket.on("auction_complete", (payload) => {
@@ -123,15 +158,30 @@ export default function Auction() {
             if (q) setQueueInfo(q);
         });
 
-        refreshPlayerStatus();
+        socket.on("join_ack", (payload) => {
+            if (payload?.userId) setUserId(payload.userId);
+            if (Array.isArray(payload?.team)) setTeam(payload.team);
+            if (typeof payload?.budget === "number") setBudget(Number(payload.budget));
+        });
 
-        return () => socket.off();
-    }, [navigate, roomId, username, teamName, team, refreshPlayerStatus]);
+        refreshPlayerStatus();
+        refreshPurses();
+        const poll = setInterval(() => {
+            refreshPlayerStatus();
+            refreshPurses();
+        }, 8000);
+
+        return () => {
+            socket.off();
+            clearInterval(poll);
+        };
+    }, [navigate, roomId, username, teamName, refreshPlayerStatus, refreshPurses]);
 
     const placeBid = (amount) => {
         if (eliminated) return;
         socket.emit("place_bid", amount);
-        setLastMyBid(amount);
+        const rounded = Math.round(Number(amount) * 100) / 100;
+        setLastMyBid(rounded);
     };
 
     const withdraw = () => {
@@ -170,16 +220,17 @@ export default function Auction() {
             }
         >
             <div className={`grid ${gridCols} gap-4 max-w-6xl mx-auto`}>
-                <aside className={`glass-card border border-border p-4 ${sidebarOpen ? "" : "hidden lg:hidden"}`}>
+                <aside className={`glass-card border border-border p-4 bg-[#0a0f1c]/85 backdrop-blur-xl ${sidebarOpen ? "" : "hidden lg:hidden"}`}>
                     <div className="flex justify-between items-center mb-2">
                         <h3 className="text-lg font-semibold">Your Team</h3>
                         <button className="ghost-btn text-sm" onClick={() => setSidebarOpen(false)}>
                             Hide
                         </button>
                     </div>
-                    <TeamList team={team} />
-                    <div className="mt-4 border-t border-border pt-3">
+                    <TeamList team={team} budget={budget} />
+                    <div className="mt-4 border-t border-border pt-3 space-y-3">
                         <PlayerStatusList sold={playerStatus.sold} remaining={playerStatus.remaining} currentId={currentPlayer?.id} />
+                        <TeamPurses purses={purses} />
                     </div>
                 </aside>
 
@@ -233,7 +284,7 @@ export default function Auction() {
                                 : hasPassed
                                     ? "You passed this player."
                                     : lastMyBid
-                                        ? `Your last bid: ₹${lastMyBid} Cr`
+                                        ? `Your last bid: ₹${lastMyBid.toFixed(2)} Cr`
                                         : "No bid yet"}
                         </span>
                     </div>
